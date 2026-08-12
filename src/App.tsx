@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import logoUrl from "./assets/logo.svg";
+import logoUrl from "./assets/logo.png";
 
 type QueueTaskStatus =
   | "waiting"
@@ -373,7 +373,7 @@ export default function App() {
         <img
           src={logoUrl}
           alt="Racing Dispatch"
-          className="h-12 w-12 shrink-0 sm:h-14 sm:w-14"
+          className="h-12 w-12 shrink-0 rounded-xl object-cover sm:h-14 sm:w-14"
         />
         <div className="min-w-0">
           <div className="text-[11px] font-semibold tracking-[0.28em] text-[var(--rd-red)]">

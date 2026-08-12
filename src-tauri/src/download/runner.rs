@@ -164,11 +164,17 @@ where
     validate_url(url)?;
     std::fs::create_dir_all(output_dir)?;
 
-    let ffmpeg_location = bins
+    let mut ffmpeg_location = bins
         .ffmpeg
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| bins.ffmpeg.clone());
+        .canonicalize()
+        .unwrap_or_else(|_| bins.ffmpeg.clone());
+    #[cfg(windows)]
+    {
+        let s = ffmpeg_location.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            ffmpeg_location = std::path::PathBuf::from(stripped);
+        }
+    }
 
     let output_template = output_dir
         .join("%(title).200B [%(id)s].%(ext)s")
@@ -181,7 +187,6 @@ where
         .arg("--newline")
         .arg("--progress")
         .arg("--no-playlist")
-        .arg("--no-warnings")
         .arg("-f")
         .arg(format_id)
         .arg("--merge-output-format")

@@ -192,24 +192,120 @@ pub fn default_download_dir(app: &AppHandle) -> PathBuf {
     PathBuf::from(cfg.download_dir)
 }
 
+/// Absolute path to the bundled ffmpeg binary for `--ffmpeg-location`.
+/// Never rely on PATH; strip Windows `\\?\` prefix which can break yt-dlp.
+fn bundled_ffmpeg_location(ffmpeg: &Path) -> AppResult<PathBuf> {
+    if !ffmpeg.is_file() {
+        return Err(AppError::BinaryMissing(format!(
+            "bundled ffmpeg 不存在: {}",
+            ffmpeg.display()
+        )));
+    }
+
+    let abs = std::fs::canonicalize(ffmpeg).unwrap_or_else(|_| ffmpeg.to_path_buf());
+    Ok(normalize_path_for_yt_dlp(abs))
+}
+
+fn normalize_path_for_yt_dlp(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
+
+fn is_ffmpeg_missing_error(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("ffmpeg not found")
+        || (lower.contains("ffmpeg-location") && lower.contains("does not exist"))
+        || (lower.contains("merging of multiple formats") && lower.contains("ffmpeg"))
+        || lower.contains("please install or provide the path using --ffmpeg-location")
+}
+
 fn classify_line(line: &str) -> DownloadLog {
     let parsed = progress::parse_line(line);
     let lower = line.to_ascii_lowercase();
+
+    if is_ffmpeg_missing_error(&lower) {
+        return DownloadLog {
+            status: "failed".into(),
+            message: format!("找不到 bundled ffmpeg，无法合并音视频: {line}"),
+            percent: None,
+            speed: None,
+            eta: None,
+        };
+    }
 
     if lower.contains("[merger]")
         || lower.contains("merging formats")
         || lower.contains("combining")
     {
+        let done = lower.contains("merged")
+            || lower.contains("deleting original")
+            || lower.contains("has already been downloaded");
         return DownloadLog {
             status: "merging".into(),
-            message: if line.trim().is_empty() {
-                "Combining video and audio".into()
+            message: if done {
+                format!("合并成功: {line}")
+            } else if lower.contains("merging formats into") || lower.contains("[merger]") {
+                format!("开始 ffmpeg 合并: {line}")
             } else {
                 line.to_string()
             },
             percent: parsed.percent.or(Some(99.0)),
             speed: None,
             eta: None,
+        };
+    }
+
+    // yt-dlp destination lines for separate streams: title [id].fXXXX.ext
+    if lower.contains("destination:") || lower.contains("[download] destination") {
+        let is_fragment = line.contains(".f")
+            && (lower.contains(".mp4")
+                || lower.contains(".webm")
+                || lower.contains(".m4a")
+                || lower.contains(".mkv")
+                || lower.contains(".opus"));
+        if is_fragment {
+            let audio_like = lower.contains(".m4a")
+                || lower.contains(".opus")
+                || lower.contains(".mp3")
+                || lower.contains("audio only")
+                || looks_like_audio_fragment(line);
+            let message = if audio_like {
+                format!("下载音频流: {line}")
+            } else {
+                format!("下载视频流: {line}")
+            };
+            return DownloadLog {
+                status: "downloading".into(),
+                message,
+                percent: parsed.percent,
+                speed: parsed.speed,
+                eta: parsed.eta,
+            };
+        }
+    }
+
+    if lower.contains("downloading") && lower.contains("audio") {
+        return DownloadLog {
+            status: "downloading".into(),
+            message: format!("下载音频流: {line}"),
+            percent: parsed.percent,
+            speed: parsed.speed,
+            eta: parsed.eta,
+        };
+    }
+    if lower.contains("downloading") && lower.contains("video") {
+        return DownloadLog {
+            status: "downloading".into(),
+            message: format!("下载视频流: {line}"),
+            percent: parsed.percent,
+            speed: parsed.speed,
+            eta: parsed.eta,
         };
     }
 
@@ -230,6 +326,16 @@ fn classify_line(line: &str) -> DownloadLog {
         speed: parsed.speed,
         eta: parsed.eta,
     }
+}
+
+fn looks_like_audio_fragment(line: &str) -> bool {
+    // Heuristic: small-format audio ids often appear as .f14x / .f25x webm/m4a
+    let lower = line.to_ascii_lowercase();
+    lower.contains("audio")
+        || lower.contains(".m4a")
+        || lower.contains(".opus")
+        || (lower.contains(".webm") && lower.contains(".f14"))
+        || (lower.contains(".webm") && lower.contains(".f25"))
 }
 
 /// Cancel the active yt-dlp process (if any).
@@ -334,22 +440,56 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         return Err(err);
     }
 
+    let ffmpeg_location = match bundled_ffmpeg_location(&bins.ffmpeg) {
+        Ok(p) => p,
+        Err(e) => {
+            emit_log(
+                &app,
+                DownloadLog {
+                    status: "failed".into(),
+                    message: e.to_string(),
+                    percent: None,
+                    speed: None,
+                    eta: None,
+                },
+            );
+            return Err(e);
+        }
+    };
+
+    // Prove the exact binary yt-dlp will use (never PATH).
+    if binaries::read_version(&ffmpeg_location).await.is_none() {
+        let err = AppError::BinaryMissing(format!(
+            "bundled ffmpeg 无法执行: {}",
+            ffmpeg_location.display()
+        ));
+        emit_log(
+            &app,
+            DownloadLog {
+                status: "failed".into(),
+                message: err.to_string(),
+                percent: None,
+                speed: None,
+                eta: None,
+            },
+        );
+        return Err(err);
+    }
+
     emit_log(
         &app,
         DownloadLog {
             status: "downloading".into(),
-            message: format!("正在下载...\n目录: {}", out_dir.display()),
+            message: format!(
+                "正在下载...\n目录: {}\nffmpeg: {}",
+                out_dir.display(),
+                ffmpeg_location.display()
+            ),
             percent: Some(0.0),
             speed: None,
             eta: None,
         },
     );
-
-    let ffmpeg_location = bins
-        .ffmpeg
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| bins.ffmpeg.clone());
 
     let output_template = out_dir
         .join("%(title).200B [%(id)s].%(ext)s")
@@ -357,12 +497,12 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         .to_string();
 
     let mut cmd = Command::new(&bins.yt_dlp);
+    // Pass the bundled ffmpeg *binary* path (not PATH, not parent-only guess).
     cmd.arg("--ffmpeg-location")
         .arg(&ffmpeg_location)
         .arg("--newline")
         .arg("--progress")
         .arg("--no-playlist")
-        .arg("--no-warnings")
         .arg("-f")
         .arg("bv*+ba/b")
         .arg("--merge-output-format")
@@ -490,11 +630,30 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         let path = output_path
             .clone()
             .unwrap_or_else(|| out_dir.to_string_lossy().to_string());
+
+        let final_path = PathBuf::from(&path);
+        let removed = cleanup_merge_leftovers(&final_path);
+        if !removed.is_empty() {
+            emit_log(
+                &app,
+                DownloadLog {
+                    status: "merging".into(),
+                    message: format!(
+                        "合并成功，已清理临时流文件: {}",
+                        removed.join(", ")
+                    ),
+                    percent: Some(99.5),
+                    speed: None,
+                    eta: None,
+                },
+            );
+        }
+
         emit_log(
             &app,
             DownloadLog {
                 status: "completed".into(),
-                message: format!("合并完成\n已保存: {path}"),
+                message: format!("合并成功\n已保存: {path}"),
                 percent: Some(100.0),
                 speed: None,
                 eta: None,
@@ -509,10 +668,16 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
             .cloned()
             .unwrap_or_else(|| format!("yt-dlp 退出码: {:?}", status.code()));
 
-        let message = if detail.to_ascii_lowercase().contains("unable to download")
-            || detail.to_ascii_lowercase().contains("network")
-            || detail.to_ascii_lowercase().contains("urlopen")
-            || detail.to_ascii_lowercase().contains("timed out")
+        let lower = detail.to_ascii_lowercase();
+        let message = if is_ffmpeg_missing_error(&detail) {
+            format!(
+                "找不到 bundled ffmpeg（路径: {}）: {detail}",
+                ffmpeg_location.display()
+            )
+        } else if lower.contains("unable to download")
+            || lower.contains("network")
+            || lower.contains("urlopen")
+            || lower.contains("timed out")
         {
             format!("网络错误: {detail}")
         } else {
@@ -538,4 +703,40 @@ fn looks_like_filepath(line: &str) -> bool {
         return false;
     }
     Path::new(line).extension().is_some() && (line.contains('/') || line.contains('\\'))
+}
+
+/// Remove yt-dlp intermediate stream files left beside the merged output.
+/// Example: `Title [id].f137.mp4` / `Title [id].f251.webm` next to `Title [id].mp4`.
+fn cleanup_merge_leftovers(final_path: &Path) -> Vec<String> {
+    let mut removed = Vec::new();
+    let Some(parent) = final_path.parent() else {
+        return removed;
+    };
+    let Some(stem) = final_path.file_stem().and_then(|s| s.to_str()) else {
+        return removed;
+    };
+    if stem.is_empty() {
+        return removed;
+    }
+
+    let prefix = format!("{stem}.f");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return removed;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == final_path {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with(&prefix) {
+            if std::fs::remove_file(&path).is_ok() {
+                removed.push(name.to_string());
+            }
+        }
+    }
+    removed
 }
