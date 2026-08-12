@@ -1,6 +1,6 @@
 [package]
 name = "rd-media-toolkit"
-version = "0.1.0"
+version = "0.1.3"
 description = "RD Media Toolkit — local video download and media toolkit"
 authors = ["RD"]
 edition = "2021"
@@ -26,3 +26,4 @@ tokio = { version = "1", features = ["sync", "time", "rt", "macros", "process", 
 parking_lot = "0.12"
 regex = "1"
 dirs = "6"
+tauri-plugin-clipboard-manager = "2"

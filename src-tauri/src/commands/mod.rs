@@ -10,17 +10,14 @@ use uuid::Uuid;
 
 /// MVP: one-shot download with live `download://log` events.
 #[tauri::command]
-pub async fn download_video(
-    app: AppHandle,
-    url: String,
-) -> Result<String, crate::error::AppError> {
+pub async fn download_video(app: AppHandle, url: String) -> Result<String, crate::error::AppError> {
     crate::downloader::download_video(app, url).await
 }
 
 /// MVP: kill the active yt-dlp child process.
 #[tauri::command]
 pub async fn cancel_active_download(app: AppHandle) -> Result<(), crate::error::AppError> {
-    crate::downloader::cancel_download(app).await
+    crate::downloader::cancel_download(app, "cancel_active_download").await
 }
 
 /// MVP: open default download folder in Finder / Explorer.
@@ -89,7 +86,10 @@ pub fn queue_resume(app: AppHandle) -> Result<crate::queue::QueueSnapshot, crate
 
 #[tauri::command]
 pub async fn queue_cancel_current(app: AppHandle) -> Result<(), crate::error::AppError> {
-    let queue = app.state::<std::sync::Arc<crate::queue::QueueManager>>().inner().clone();
+    let queue = app
+        .state::<std::sync::Arc<crate::queue::QueueManager>>()
+        .inner()
+        .clone();
     queue.cancel_current().await
 }
 
@@ -121,7 +121,9 @@ pub fn cancel_download(
 }
 
 #[tauri::command]
-pub fn list_downloads(state: State<'_, AppState>) -> Result<Vec<DownloadTask>, crate::error::AppError> {
+pub fn list_downloads(
+    state: State<'_, AppState>,
+) -> Result<Vec<DownloadTask>, crate::error::AppError> {
     Ok(state.task_manager.list_tasks())
 }
 

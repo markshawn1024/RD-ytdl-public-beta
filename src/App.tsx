@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import logoUrl from "./assets/logo.png";
 
 type QueueTaskStatus =
@@ -209,6 +211,7 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const consoleRef = useRef<HTMLPreElement>(null);
 
   const current = useMemo(
@@ -251,6 +254,12 @@ export default function App() {
 
     void (async () => {
       try {
+        setAppVersion(await getVersion());
+      } catch {
+        setAppVersion(null);
+      }
+
+      try {
         const v = await invoke<SidecarVersions>("check_sidecars");
         setVersions(v);
         setVersionError(null);
@@ -286,7 +295,11 @@ export default function App() {
       unsubs.push(
         await listen<DownloadLog>("download://log", (event) => {
           setLiveStatus(event.payload.status);
-          setLogs((prev) => [...prev, formatLogLine(event.payload)]);
+          setLogs((prev) => {
+            const next = [...prev, formatLogLine(event.payload)];
+            // Cap console size so UI re-renders stay light during long downloads.
+            return next.length > 300 ? next.slice(next.length - 300) : next;
+          });
         }),
       );
       unsubs.push(
@@ -296,6 +309,7 @@ export default function App() {
       );
     })();
 
+    // Cleanup: ONLY detach UI listeners. Never cancel/kill the Rust download.
     return () => unsubs.forEach((fn) => fn());
   }, []);
 
@@ -354,6 +368,20 @@ export default function App() {
     setParseError(null);
   }
 
+  /** Right-click pastes clipboard into URL field (PowerShell-style), without touching downloads. */
+  async function onUrlContextMenu(e: MouseEvent<HTMLInputElement>) {
+    e.preventDefault();
+    try {
+      const text = (await readText()).trim();
+      if (!text) return;
+      setUrl(text);
+      setVideoInfo(null);
+      setParseError(null);
+    } catch {
+      setLogs((p) => [...p, "无法读取剪贴板"]);
+    }
+  }
+
   async function onSaveSettings() {
     if (!settings) return;
     setSettingsMsg(null);
@@ -386,10 +414,17 @@ export default function App() {
             专业赛车媒体本地下载工具
           </p>
         </div>
-        <div className="ml-auto hidden text-right text-[11px] text-[var(--rd-metal)] sm:block">
-          <div>队列 {queue.paused ? "已暂停" : "运行中"}</div>
+        <div className="ml-auto text-right text-[11px] text-[var(--rd-metal)]">
+          {appVersion ? (
+            <div className="font-mono tracking-wide opacity-90">v{appVersion}</div>
+          ) : null}
+          <div className="mt-0.5 hidden sm:block">
+            队列 {queue.paused ? "已暂停" : "运行中"}
+          </div>
           {versions ? (
-            <div className="mt-0.5 font-mono opacity-80">yt-dlp {versions.ytDlp}</div>
+            <div className="mt-0.5 hidden font-mono opacity-80 sm:block">
+              yt-dlp {versions.ytDlp}
+            </div>
           ) : null}
         </div>
       </header>
@@ -415,7 +450,8 @@ export default function App() {
               setParseError(null);
             }
           }}
-          placeholder="粘贴视频 URL，例如 https://..."
+          onContextMenu={(e) => void onUrlContextMenu(e)}
+          placeholder="粘贴视频 URL，例如 https://...（右键粘贴）"
           className="rd-input"
           onKeyDown={(e) => {
             if (e.key === "Enter" && !parsing && !adding) void onParse();

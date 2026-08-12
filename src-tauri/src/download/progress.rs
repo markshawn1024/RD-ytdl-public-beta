@@ -38,17 +38,14 @@ pub fn parse_line(line: &str) -> ParsedProgress {
     // Prefer JSON progress template lines
     if trimmed.starts_with('{') {
         if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            let percent = value
-                .get("percent")
-                .and_then(|v| v.as_f64())
-                .or_else(|| {
-                    value
-                        .get("downloaded_bytes")
-                        .and_then(|d| d.as_f64())
-                        .zip(value.get("total_bytes").and_then(|t| t.as_f64()))
-                        .filter(|(_, total)| *total > 0.0)
-                        .map(|(downloaded, total)| downloaded / total * 100.0)
-                });
+            let percent = value.get("percent").and_then(|v| v.as_f64()).or_else(|| {
+                value
+                    .get("downloaded_bytes")
+                    .and_then(|d| d.as_f64())
+                    .zip(value.get("total_bytes").and_then(|t| t.as_f64()))
+                    .filter(|(_, total)| *total > 0.0)
+                    .map(|(downloaded, total)| downloaded / total * 100.0)
+            });
             return ParsedProgress {
                 percent,
                 speed: value
@@ -61,11 +58,11 @@ pub fn parse_line(line: &str) -> ParsedProgress {
                             .and_then(|v| v.as_f64())
                             .map(|n| format!("{:.1}B/s", n))
                     }),
-                eta: value
-                    .get("eta")
-                    .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| {
-                        v.as_u64().map(|n| format!("{n}s"))
-                    })),
+                eta: value.get("eta").and_then(|v| {
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| v.as_u64().map(|n| format!("{n}s")))
+                }),
                 destination: value
                     .get("filename")
                     .and_then(|v| v.as_str())

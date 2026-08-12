@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 pub const LOG_EVENT: &str = "download://log";
 
 /// Shared handle for the in-flight yt-dlp process (cancel support).
+/// Owned by Tauri app state — independent of React component lifetime.
 pub struct ActiveDownload {
     cancel: AtomicBool,
     child: Mutex<Option<Child>>,
@@ -35,10 +36,18 @@ impl ActiveDownload {
 
     async fn reset_for_start(&self) {
         self.cancel.store(false, Ordering::SeqCst);
-        let _ = self.child.lock().await.take();
+        if let Some(mut c) = self.child.lock().await.take() {
+            let pid = c.id();
+            eprintln!(
+                "[DOWNLOAD] active child cleared source=reset_for_start pid={pid:?} (explicit kill)"
+            );
+            let _ = c.kill().await;
+            let _ = c.wait().await;
+        }
     }
 
-    fn request_cancel(&self) {
+    fn request_cancel(&self, source: &str) {
+        eprintln!("[DOWNLOAD] cancel flag set source={source}");
         self.cancel.store(true, Ordering::SeqCst);
     }
 
@@ -47,11 +56,20 @@ impl ActiveDownload {
     }
 
     async fn set_child(&self, child: Child) {
+        let pid = child.id();
+        eprintln!("[DOWNLOAD] started pid={pid:?}");
         *self.child.lock().await = Some(child);
     }
 
-    async fn take_child(&self) -> Option<Child> {
-        self.child.lock().await.take()
+    async fn take_child(&self, source: &str) -> Option<Child> {
+        let child = self.child.lock().await.take();
+        if let Some(ref c) = child {
+            eprintln!(
+                "[DOWNLOAD] active child cleared source={source} pid={:?}",
+                c.id()
+            );
+        }
+        child
     }
 }
 
@@ -133,39 +151,35 @@ pub async fn check_sidecars(app: &AppHandle) -> AppResult<SidecarVersions> {
         e
     })?;
 
-    let yt = binaries::read_version(&bins.yt_dlp)
-        .await
-        .ok_or_else(|| {
-            let err = AppError::BinaryMissing("yt-dlp 无法执行 --version".into());
-            emit_log(
-                app,
-                DownloadLog {
-                    status: "failed".into(),
-                    message: err.to_string(),
-                    percent: None,
-                    speed: None,
-                    eta: None,
-                },
-            );
-            err
-        })?;
+    let yt = binaries::read_version(&bins.yt_dlp).await.ok_or_else(|| {
+        let err = AppError::BinaryMissing("yt-dlp 无法执行 --version".into());
+        emit_log(
+            app,
+            DownloadLog {
+                status: "failed".into(),
+                message: err.to_string(),
+                percent: None,
+                speed: None,
+                eta: None,
+            },
+        );
+        err
+    })?;
 
-    let ff = binaries::read_version(&bins.ffmpeg)
-        .await
-        .ok_or_else(|| {
-            let err = AppError::BinaryMissing("ffmpeg 无法执行 -version".into());
-            emit_log(
-                app,
-                DownloadLog {
-                    status: "failed".into(),
-                    message: err.to_string(),
-                    percent: None,
-                    speed: None,
-                    eta: None,
-                },
-            );
-            err
-        })?;
+    let ff = binaries::read_version(&bins.ffmpeg).await.ok_or_else(|| {
+        let err = AppError::BinaryMissing("ffmpeg 无法执行 -version".into());
+        emit_log(
+            app,
+            DownloadLog {
+                status: "failed".into(),
+                message: err.to_string(),
+                percent: None,
+                speed: None,
+                eta: None,
+            },
+        );
+        err
+    })?;
 
     Ok(SidecarVersions {
         yt_dlp: yt,
@@ -230,9 +244,11 @@ fn classify_line(line: &str) -> DownloadLog {
     let lower = line.to_ascii_lowercase();
 
     if is_ffmpeg_missing_error(&lower) {
+        // Do not emit terminal "failed" here — queue terminal state is owned by
+        // download_video / schedule after the process exits.
         return DownloadLog {
-            status: "failed".into(),
-            message: format!("找不到 bundled ffmpeg，无法合并音视频: {line}"),
+            status: "downloading".into(),
+            message: format!("警告: ffmpeg 相关: {line}"),
             percent: None,
             speed: None,
             eta: None,
@@ -339,13 +355,24 @@ fn looks_like_audio_fragment(line: &str) -> bool {
 }
 
 /// Cancel the active yt-dlp process (if any).
-pub async fn cancel_download(app: AppHandle) -> AppResult<()> {
+/// `source` is logged so we can prove only explicit user cancel kills the child.
+pub async fn cancel_download(app: AppHandle, source: &str) -> AppResult<()> {
+    eprintln!("[DOWNLOAD] cancel requested source={source}");
     let active = app.state::<Arc<ActiveDownload>>();
-    active.request_cancel();
+    active.request_cancel(source);
 
-    if let Some(mut c) = active.take_child().await {
+    if let Some(mut c) = active.take_child(source).await {
+        let pid = c.id();
+        eprintln!("[DOWNLOAD] kill pid={pid:?} source={source}");
         let _ = c.kill().await;
-        let _ = c.wait().await;
+        match c.wait().await {
+            Ok(status) => {
+                eprintln!("[DOWNLOAD] child exited after kill pid={pid:?} code={status:?}")
+            }
+            Err(e) => eprintln!("[DOWNLOAD] wait after kill failed pid={pid:?} err={e}"),
+        }
+    } else {
+        eprintln!("[DOWNLOAD] cancel requested but no active child source={source}");
     }
 
     emit_log(
@@ -514,7 +541,9 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         .arg(url.trim())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        // NEVER kill_on_drop: UI/rerender must not own this process lifetime.
+        // Only cancel_download() / reset_for_start() may kill.
+        .kill_on_drop(false);
     binaries::configure_hidden_process(&mut cmd);
 
     let mut child = match cmd.spawn() {
@@ -544,7 +573,7 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         .take()
         .ok_or_else(|| AppError::DownloadFailed("无法读取 stderr".into()))?;
 
-    // Store child so Cancel can kill it from another command.
+    // Store child so explicit Cancel can kill it from another command.
     active.set_child(child).await;
 
     let mut stdout_reader = BufReader::new(stdout).lines();
@@ -556,7 +585,9 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
 
     while !stdout_done || !stderr_done {
         if active.is_cancelled() {
-            if let Some(mut c) = active.take_child().await {
+            if let Some(mut c) = active.take_child("download_loop_cancelled").await {
+                let pid = c.id();
+                eprintln!("[DOWNLOAD] kill pid={pid:?} source=download_loop_cancelled");
                 let _ = c.kill().await;
                 let _ = c.wait().await;
             }
@@ -609,19 +640,27 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
     }
 
     if active.is_cancelled() {
-        let _ = active.take_child().await;
+        let _ = active.take_child("post_pipe_cancelled").await;
         return Err(AppError::Cancelled);
     }
 
-    let mut child = match active.take_child().await {
+    let mut child = match active.take_child("wait_exit").await {
         Some(c) => c,
-        None => return Err(AppError::Cancelled),
+        None => {
+            eprintln!("[DOWNLOAD] child missing before wait (treated as cancelled)");
+            return Err(AppError::Cancelled);
+        }
     };
 
+    let pid = child.id();
     let status = child
         .wait()
         .await
         .map_err(|e| AppError::DownloadFailed(e.to_string()))?;
+    eprintln!(
+        "[DOWNLOAD] child exited pid={pid:?} code={status:?} cancelled={}",
+        active.is_cancelled()
+    );
 
     if active.is_cancelled() {
         return Err(AppError::Cancelled);
@@ -639,10 +678,7 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
                 &app,
                 DownloadLog {
                     status: "merging".into(),
-                    message: format!(
-                        "合并成功，已清理临时流文件: {}",
-                        removed.join(", ")
-                    ),
+                    message: format!("合并成功，已清理临时流文件: {}", removed.join(", ")),
                     percent: Some(99.5),
                     speed: None,
                     eta: None,

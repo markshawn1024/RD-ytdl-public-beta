@@ -165,17 +165,19 @@ where
     validate_url(url)?;
     std::fs::create_dir_all(output_dir)?;
 
-    let mut ffmpeg_location = bins
+    let ffmpeg_location = bins
         .ffmpeg
         .canonicalize()
         .unwrap_or_else(|_| bins.ffmpeg.clone());
     #[cfg(windows)]
-    {
+    let ffmpeg_location = {
         let s = ffmpeg_location.to_string_lossy();
         if let Some(stripped) = s.strip_prefix(r"\\?\") {
-            ffmpeg_location = std::path::PathBuf::from(stripped);
+            std::path::PathBuf::from(stripped)
+        } else {
+            ffmpeg_location
         }
-    }
+    };
 
     let output_template = output_dir
         .join("%(title).200B [%(id)s].%(ext)s")
@@ -199,7 +201,7 @@ where
         .arg(url)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .kill_on_drop(false);
     binaries::configure_hidden_process(&mut cmd);
 
     if let Some(proxy) = config.proxy.as_deref().filter(|s| !s.is_empty()) {

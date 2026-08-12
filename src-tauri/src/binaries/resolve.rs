@@ -62,11 +62,7 @@ fn candidate_paths(app: &AppHandle, exe_name: &str) -> Vec<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         let triple = host_target_triple();
         let with_triple = if cfg!(windows) {
-            format!(
-                "{}-{}.exe",
-                exe_name.trim_end_matches(".exe"),
-                triple
-            )
+            format!("{}-{}.exe", exe_name.trim_end_matches(".exe"), triple)
         } else {
             format!("{exe_name}-{triple}")
         };

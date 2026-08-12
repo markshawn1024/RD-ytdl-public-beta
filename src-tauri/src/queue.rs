@@ -203,7 +203,8 @@ impl QueueManager {
             return Err(AppError::Message("当前没有下载中的任务".into()));
         }
 
-        downloader::cancel_download(self.app.clone()).await?;
+        eprintln!("[DOWNLOAD] cancel requested source=queue_cancel_current current={current:?}");
+        downloader::cancel_download(self.app.clone(), "queue_cancel_current").await?;
 
         if let Some(id) = current {
             self.update_task(id, |t| {
@@ -222,10 +223,18 @@ impl QueueManager {
             return;
         };
 
+        // CRITICAL: streaming download://log events must NEVER terminate a task.
+        // Terminal states (completed / failed / cancelled) are owned exclusively by:
+        // - schedule() result handler after yt-dlp exits
+        // - cancel_current() when the user explicitly cancels
+        // Treating classify_line("failed") etc. as terminal couples the queue to UI/log noise.
         match log.status.as_str() {
             "downloading" | "checking" | "merging" => {
                 self.update_task(id, |t| {
-                    t.status = QueueTaskStatus::Downloading;
+                    if t.status != QueueTaskStatus::Downloading {
+                        // Do not resurrect a task that already finished via schedule()/cancel.
+                        return;
+                    }
                     if let Some(p) = log.percent {
                         t.progress = p;
                     }
@@ -236,45 +245,17 @@ impl QueueManager {
                         t.eta = log.eta.clone();
                     }
                 });
+                // Progress is ephemeral — emit to UI without hammering disk on every line.
+                self.emit_all_no_persist();
             }
-            "completed" => {
-                self.update_task(id, |t| {
-                    t.status = QueueTaskStatus::Completed;
-                    t.progress = 100.0;
-                    t.speed = None;
-                    t.eta = None;
-                    if log.message.contains("已保存:") {
-                        if let Some(path) = log.message.lines().find_map(|l| {
-                            l.strip_prefix("已保存:")
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                        }) {
-                            t.output_path = Some(path);
-                        }
-                    }
-                });
-            }
-            "failed" => {
-                self.update_task(id, |t| {
-                    t.status = QueueTaskStatus::Failed;
-                    t.error = Some(log.message.clone());
-                    t.speed = None;
-                    t.eta = None;
-                });
-            }
-            "cancelled" => {
-                self.update_task(id, |t| {
-                    if t.status == QueueTaskStatus::Downloading {
-                        t.status = QueueTaskStatus::Cancelled;
-                        t.error = Some("用户取消".into());
-                        t.speed = None;
-                        t.eta = None;
-                    }
-                });
+            "completed" | "failed" | "cancelled" => {
+                eprintln!(
+                    "[DOWNLOAD] ignore terminal log status='{}' for task {id} (process lifecycle owns terminal state)",
+                    log.status
+                );
             }
             _ => {}
         }
-        self.emit_all();
     }
 
     fn update_task<F>(&self, id: Uuid, f: F)
@@ -356,8 +337,17 @@ impl QueueManager {
 
         let app = self.app.clone();
         tauri::async_runtime::spawn(async move {
+            eprintln!("[DOWNLOAD] queue task {id} starting");
             let result = downloader::download_video(app.clone(), url).await;
             let queue = app.state::<Arc<QueueManager>>();
+
+            match &result {
+                Ok(path) => eprintln!("[DOWNLOAD] queue task {id} completed path={path}"),
+                Err(AppError::Cancelled) => {
+                    eprintln!("[DOWNLOAD] queue task {id} cancelled")
+                }
+                Err(e) => eprintln!("[DOWNLOAD] queue task {id} failed err={e}"),
+            }
 
             match result {
                 Ok(path) => {

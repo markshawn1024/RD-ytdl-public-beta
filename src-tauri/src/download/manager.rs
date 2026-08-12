@@ -3,9 +3,7 @@ use crate::config::{self, AppConfig};
 use crate::download::progress::{self, ParsedProgress};
 use crate::download::runner;
 use crate::error::{AppError, AppResult};
-use crate::models::{
-    DownloadTask, LogEvent, ProgressEvent, StartDownloadRequest, TaskStatus,
-};
+use crate::models::{DownloadTask, LogEvent, ProgressEvent, StartDownloadRequest, TaskStatus};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::fs;
