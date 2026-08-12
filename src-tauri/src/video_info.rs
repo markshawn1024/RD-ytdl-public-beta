@@ -62,6 +62,7 @@ pub async fn get_video_info(app: &AppHandle, url: String) -> AppResult<VideoInfo
         .arg(url.trim())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    binaries::configure_hidden_process(&mut cmd);
 
     if let Some(proxy) = cfg.proxy.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--proxy").arg(proxy);

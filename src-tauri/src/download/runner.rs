@@ -1,4 +1,4 @@
-use crate::binaries::BinaryPaths;
+use crate::binaries::{self, BinaryPaths};
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
 use crate::models::{VideoFormat, VideoInfo};
@@ -20,6 +20,7 @@ pub async fn probe_url(bins: &BinaryPaths, config: &AppConfig, url: &str) -> App
         .arg(url)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    binaries::configure_hidden_process(&mut cmd);
 
     if let Some(proxy) = config.proxy.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--proxy").arg(proxy);
@@ -199,6 +200,7 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    binaries::configure_hidden_process(&mut cmd);
 
     if let Some(proxy) = config.proxy.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--proxy").arg(proxy);

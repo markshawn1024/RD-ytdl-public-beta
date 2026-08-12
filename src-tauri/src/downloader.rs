@@ -515,6 +515,7 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    binaries::configure_hidden_process(&mut cmd);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,

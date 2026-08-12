@@ -135,7 +135,10 @@ fn ensure_executable(path: &Path) -> AppResult<()> {
 pub async fn read_version(bin: &Path) -> Option<String> {
     // Prefer --version (yt-dlp); fall back to -version (ffmpeg).
     for arg in ["--version", "-version"] {
-        if let Ok(output) = tokio::process::Command::new(bin).arg(arg).output().await {
+        let mut cmd = tokio::process::Command::new(bin);
+        cmd.arg(arg);
+        crate::binaries::configure_hidden_process(&mut cmd);
+        if let Ok(output) = cmd.output().await {
             if output.status.success() {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let line = text.lines().next().unwrap_or("").trim();
