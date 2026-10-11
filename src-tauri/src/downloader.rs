@@ -97,7 +97,7 @@ fn emit_log(app: &AppHandle, log: DownloadLog) {
     }
 }
 
-/// Resolve and verify yt-dlp / ffmpeg sidecars; return their paths.
+/// Resolve and verify yt-dlp / ffmpeg / deno sidecars; return their paths.
 pub fn ensure_sidecars(app: &AppHandle) -> AppResult<BinaryPaths> {
     let bins = binaries::resolve(app)?;
     if !bins.yt_dlp.is_file() {
@@ -112,6 +112,12 @@ pub fn ensure_sidecars(app: &AppHandle) -> AppResult<BinaryPaths> {
             bins.ffmpeg.display()
         )));
     }
+    if !bins.deno.is_file() {
+        return Err(AppError::BinaryMissing(format!(
+            "deno 不存在（JavaScript runtime 不可用）: {}",
+            bins.deno.display()
+        )));
+    }
     Ok(bins)
 }
 
@@ -120,8 +126,13 @@ pub fn ensure_sidecars(app: &AppHandle) -> AppResult<BinaryPaths> {
 pub struct SidecarVersions {
     pub yt_dlp: String,
     pub ffmpeg: String,
+    pub deno: String,
     pub yt_dlp_path: String,
     pub ffmpeg_path: String,
+    pub deno_path: String,
+    pub yt_dlp_ready: bool,
+    pub ffmpeg_ready: bool,
+    pub deno_ready: bool,
 }
 
 /// Check sidecars exist and report versions (`yt-dlp --version`, `ffmpeg -version`).
@@ -181,11 +192,64 @@ pub async fn check_sidecars(app: &AppHandle) -> AppResult<SidecarVersions> {
         err
     })?;
 
+    let deno = binaries::read_version(&bins.deno).await.ok_or_else(|| {
+        let err = AppError::BinaryMissing(
+            "JavaScript runtime unavailable: deno 无法执行 --version".into(),
+        );
+        emit_log(
+            app,
+            DownloadLog {
+                status: "failed".into(),
+                message: err.to_string(),
+                percent: None,
+                speed: None,
+                eta: None,
+            },
+        );
+        err
+    })?;
+
+    emit_log(
+        app,
+        DownloadLog {
+            status: "checking".into(),
+            message: "YT-DLP READY".into(),
+            percent: None,
+            speed: None,
+            eta: None,
+        },
+    );
+    emit_log(
+        app,
+        DownloadLog {
+            status: "checking".into(),
+            message: "FFMPEG READY".into(),
+            percent: None,
+            speed: None,
+            eta: None,
+        },
+    );
+    emit_log(
+        app,
+        DownloadLog {
+            status: "checking".into(),
+            message: "DENO READY".into(),
+            percent: None,
+            speed: None,
+            eta: None,
+        },
+    );
+
     Ok(SidecarVersions {
         yt_dlp: yt,
         ffmpeg: ff,
+        deno,
         yt_dlp_path: bins.yt_dlp.to_string_lossy().to_string(),
         ffmpeg_path: bins.ffmpeg.to_string_lossy().to_string(),
+        deno_path: bins.deno.to_string_lossy().to_string(),
+        yt_dlp_ready: true,
+        ffmpeg_ready: true,
+        deno_ready: true,
     })
 }
 
@@ -249,6 +313,18 @@ fn classify_line(line: &str) -> DownloadLog {
         return DownloadLog {
             status: "downloading".into(),
             message: format!("警告: ffmpeg 相关: {line}"),
+            percent: None,
+            speed: None,
+            eta: None,
+        };
+    }
+
+    if binaries::is_js_runtime_missing(line) {
+        return DownloadLog {
+            status: "downloading".into(),
+            message: format!(
+                "YouTube 解析环境异常: 内置 JavaScript Runtime 不可用，请更新或重新安装应用。原始: {line}"
+            ),
             percent: None,
             speed: None,
             eta: None,
@@ -503,14 +579,48 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         return Err(err);
     }
 
+    let deno_location = binaries::bundled_deno_location(&bins.deno);
+    if binaries::read_version(&deno_location).await.is_none() {
+        let err = AppError::BinaryMissing(format!(
+            "JavaScript runtime unavailable: bundled deno 无法执行: {}",
+            deno_location.display()
+        ));
+        emit_log(
+            &app,
+            DownloadLog {
+                status: "failed".into(),
+                message: err.to_string(),
+                percent: None,
+                speed: None,
+                eta: None,
+            },
+        );
+        return Err(err);
+    }
+
+    let cache_dir = binaries::cache_dir(&app).map_err(|e| {
+        emit_log(
+            &app,
+            DownloadLog {
+                status: "failed".into(),
+                message: e.to_string(),
+                percent: None,
+                speed: None,
+                eta: None,
+            },
+        );
+        e
+    })?;
+
     emit_log(
         &app,
         DownloadLog {
             status: "downloading".into(),
             message: format!(
-                "正在下载...\n目录: {}\nffmpeg: {}",
+                "正在下载...\n目录: {}\nffmpeg: {}\ndeno: {}",
                 out_dir.display(),
-                ffmpeg_location.display()
+                ffmpeg_location.display(),
+                deno_location.display()
             ),
             percent: Some(0.0),
             speed: None,
@@ -545,6 +655,11 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
         // Only cancel_download() / reset_for_start() may kill.
         .kill_on_drop(false);
     binaries::configure_hidden_process(&mut cmd);
+    binaries::append_runtime_args(&mut cmd, &bins, &cache_dir);
+
+    if let Some(proxy) = config::load_config(&app).proxy.as_deref().filter(|s| !s.is_empty()) {
+        cmd.arg("--proxy").arg(proxy);
+    }
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -582,6 +697,7 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
     let mut stderr_done = false;
     let mut output_path: Option<String> = None;
     let mut err_lines: Vec<String> = Vec::new();
+    let mut saw_runtime_warning = false;
 
     while !stdout_done || !stderr_done {
         if active.is_cancelled() {
@@ -624,6 +740,9 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
                             continue;
                         }
                         err_lines.push(trimmed.clone());
+                        if binaries::is_js_runtime_missing(&trimmed) {
+                            saw_runtime_warning = true;
+                        }
                         if !active.is_cancelled() {
                             emit_log(&app, classify_line(&trimmed));
                         }
@@ -705,20 +824,13 @@ pub async fn download_video(app: AppHandle, url: String) -> AppResult<String> {
             .cloned()
             .unwrap_or_else(|| format!("yt-dlp 退出码: {:?}", status.code()));
 
-        let lower = detail.to_ascii_lowercase();
         let message = if is_ffmpeg_missing_error(&detail) {
             format!(
                 "找不到 bundled ffmpeg（路径: {}）: {detail}",
                 ffmpeg_location.display()
             )
-        } else if lower.contains("unable to download")
-            || lower.contains("network")
-            || lower.contains("urlopen")
-            || lower.contains("timed out")
-        {
-            format!("网络错误: {detail}")
         } else {
-            format!("下载失败: {detail}")
+            binaries::format_failure_message(&detail, saw_runtime_warning)
         };
 
         emit_log(

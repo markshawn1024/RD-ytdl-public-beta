@@ -26,6 +26,7 @@ dist-ssr
 # Sidecar binaries (fetch via scripts/fetch-binaries.sh)
 src-tauri/binaries/yt-dlp*
 src-tauri/binaries/ffmpeg*
+src-tauri/binaries/deno*
 !src-tauri/binaries/.gitkeep
 
 # Rust

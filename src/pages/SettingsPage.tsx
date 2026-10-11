@@ -136,6 +136,10 @@ export function SettingsPage() {
             <dt className="text-[var(--muted)]">yt-dlp</dt>
             <dd className="font-mono text-right">{versions?.ytDlp || "未检测到"}</dd>
           </div>
+          <div className="flex justify-between gap-4 border-b border-[var(--line)] py-2">
+            <dt className="text-[var(--muted)]">deno</dt>
+            <dd className="font-mono text-right">{versions?.deno || "未检测到"}</dd>
+          </div>
           <div className="flex justify-between gap-4 py-2">
             <dt className="text-[var(--muted)]">ffmpeg</dt>
             <dd className="font-mono text-right">{versions?.ffmpeg || "未检测到"}</dd>

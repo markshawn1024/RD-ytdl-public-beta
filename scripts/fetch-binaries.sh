@@ -71,12 +71,16 @@ need_fetch() {
 
 YT_OUT="${BIN_DIR}/yt-dlp-${TRIPLE}"
 FF_OUT="${BIN_DIR}/ffmpeg-${TRIPLE}"
+DENO_OUT="${BIN_DIR}/deno-${TRIPLE}"
 case "${TRIPLE}" in
   *-windows-*)
     YT_OUT="${YT_OUT}.exe"
     FF_OUT="${FF_OUT}.exe"
+    DENO_OUT="${DENO_OUT}.exe"
     ;;
 esac
+
+DENO_VERSION="2.6.6"
 
 fetch_yt_dlp() {
   case "${TRIPLE}" in
@@ -156,6 +160,62 @@ fetch_ffmpeg_via_npm() {
   chmod +x "${FF_OUT}" || true
 }
 
+fetch_deno() {
+  case "${TRIPLE}" in
+    aarch64-apple-darwin)
+      local ZIP="${BIN_DIR}/deno.zip"
+      download_first_ok "${ZIP}" \
+        "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-aarch64-apple-darwin.zip"
+      unzip -o -j "${ZIP}" "deno" -d "${BIN_DIR}"
+      mv -f "${BIN_DIR}/deno" "${DENO_OUT}"
+      chmod +x "${DENO_OUT}"
+      rm -f "${ZIP}"
+      ;;
+    x86_64-pc-windows-msvc)
+      local ZIP="${BIN_DIR}/deno.zip"
+      download_first_ok "${ZIP}" \
+        "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-pc-windows-msvc.zip"
+      unzip -o -j "${ZIP}" "deno.exe" -d "${BIN_DIR}"
+      mv -f "${BIN_DIR}/deno.exe" "${DENO_OUT}"
+      rm -f "${ZIP}"
+      ;;
+    *)
+      echo "No deno mapping for ${TRIPLE}" >&2
+      exit 1
+      ;;
+  esac
+
+  if ! is_real_binary "${DENO_OUT}"; then
+    echo "deno binary missing or too small after fetch" >&2
+    exit 1
+  fi
+}
+
+prefetch_ejs_cache() {
+  local CACHE_DIR="${ROOT_DIR}/src-tauri/resources/yt-dlp-cache"
+  mkdir -p "${CACHE_DIR}"
+
+  if [[ -n "$(find "${CACHE_DIR}" -mindepth 1 -type f ! -name '.gitkeep' 2>/dev/null | head -n 1)" ]]; then
+    echo "EJS cache already present in ${CACHE_DIR}"
+    return 0
+  fi
+
+  echo "==> Prefetching yt-dlp EJS component (ejs:github) into bundle cache..."
+  if "${YT_OUT}" \
+    --cache-dir "${CACHE_DIR}" \
+    --js-runtimes "deno:${DENO_OUT}" \
+    --remote-components ejs:github \
+    --no-playlist \
+    --flat-playlist \
+    --dump-json "https://www.youtube.com/watch?v=jNQXAC9IVRw" \
+    >/dev/null 2>"${BIN_DIR}/ejs-prefetch.log"; then
+    echo "EJS cache prefetched successfully"
+  else
+    echo "WARN: EJS prefetch failed (first YouTube use may need network). See ${BIN_DIR}/ejs-prefetch.log"
+    cat "${BIN_DIR}/ejs-prefetch.log" || true
+  fi
+}
+
 if need_fetch "${YT_OUT}"; then
   fetch_yt_dlp
 else
@@ -168,17 +228,27 @@ else
   echo "ffmpeg already present: ${FF_OUT}"
 fi
 
+if need_fetch "${DENO_OUT}"; then
+  fetch_deno
+else
+  echo "deno already present: ${DENO_OUT}"
+fi
+
 case "${TRIPLE}" in
   *-windows-*)
     cp -f "${YT_OUT}" "${BIN_DIR}/yt-dlp.exe"
     cp -f "${FF_OUT}" "${BIN_DIR}/ffmpeg.exe"
+    cp -f "${DENO_OUT}" "${BIN_DIR}/deno.exe"
     ;;
   *)
     cp -f "${YT_OUT}" "${BIN_DIR}/yt-dlp"
     cp -f "${FF_OUT}" "${BIN_DIR}/ffmpeg"
-    chmod +x "${BIN_DIR}/yt-dlp" "${BIN_DIR}/ffmpeg"
+    cp -f "${DENO_OUT}" "${BIN_DIR}/deno"
+    chmod +x "${BIN_DIR}/yt-dlp" "${BIN_DIR}/ffmpeg" "${BIN_DIR}/deno"
     ;;
 esac
+
+prefetch_ejs_cache || true
 
 echo "==> Binaries ready in ${BIN_DIR}"
 ls -lh "${BIN_DIR}"

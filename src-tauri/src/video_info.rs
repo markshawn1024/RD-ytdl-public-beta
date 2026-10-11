@@ -54,6 +54,7 @@ pub async fn get_video_info(app: &AppHandle, url: String) -> AppResult<VideoInfo
 
     let bins = binaries::resolve(app)?;
     let cfg = config::load_config(app);
+    let cache_dir = binaries::cache_dir(app)?;
 
     let mut cmd = Command::new(&bins.yt_dlp);
     cmd.arg("--dump-json")
@@ -63,6 +64,7 @@ pub async fn get_video_info(app: &AppHandle, url: String) -> AppResult<VideoInfo
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     binaries::configure_hidden_process(&mut cmd);
+    binaries::append_runtime_args(&mut cmd, &bins, &cache_dir);
 
     if let Some(proxy) = cfg.proxy.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--proxy").arg(proxy);
@@ -76,10 +78,13 @@ pub async fn get_video_info(app: &AppHandle, url: String) -> AppResult<VideoInfo
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         let msg = err.trim();
+        let saw_runtime = msg.lines().any(binaries::is_js_runtime_missing);
         if msg.is_empty() {
             return Err(AppError::ProbeFailed("解析失败（未知错误）".into()));
         }
-        return Err(AppError::ProbeFailed(msg.to_string()));
+        return Err(AppError::ProbeFailed(binaries::format_probe_failure(
+            msg, saw_runtime,
+        )));
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);

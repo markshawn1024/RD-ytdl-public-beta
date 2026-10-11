@@ -55,6 +55,10 @@ interface DownloadLog {
 interface SidecarVersions {
   ytDlp: string;
   ffmpeg: string;
+  deno: string;
+  ytDlpReady: boolean;
+  ffmpegReady: boolean;
+  denoReady: boolean;
 }
 
 interface VideoFormatInfo {
@@ -423,7 +427,7 @@ export default function App() {
           </div>
           {versions ? (
             <div className="mt-0.5 hidden font-mono opacity-80 sm:block">
-              yt-dlp {versions.ytDlp}
+              yt-dlp {versions.ytDlp} · deno {versions.deno}
             </div>
           ) : null}
         </div>
@@ -768,9 +772,17 @@ export default function App() {
                     </span>
                   </div>
                   <div>
+                    deno：
+                    <span className="ml-1 font-mono text-[var(--rd-metal-bright)]">
+                      {versions.deno}
+                      {versions.denoReady ? " ✓" : " ✗"}
+                    </span>
+                  </div>
+                  <div>
                     ffmpeg：
                     <span className="ml-1 font-mono text-[var(--rd-metal-bright)]">
                       {versions.ffmpeg}
+                      {versions.ffmpegReady ? " ✓" : " ✗"}
                     </span>
                   </div>
                 </dl>

@@ -251,6 +251,17 @@ impl TaskManager {
 
         let cfg = self.config.read().clone();
         let mgr_app = self.app.clone();
+        let cache_dir = match binaries::cache_dir(&self.app) {
+            Ok(dir) => dir,
+            Err(e) => {
+                self.update_task(id, |t| {
+                    t.status = TaskStatus::Failed;
+                    t.error = Some(e.to_string());
+                });
+                self.persist_history();
+                return;
+            }
+        };
 
         let result = runner::run_download(
             &bins,
@@ -258,6 +269,7 @@ impl TaskManager {
             &url,
             &format_id,
             PathBuf::from(&output_dir).as_path(),
+            &cache_dir,
             cancelled.clone(),
             |line| {
                 if cancelled.load(Ordering::SeqCst) {
