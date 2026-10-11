@@ -45,7 +45,6 @@
       "minimumSystemVersion": "11.0"
     },
     "windows": {
-      "bundleVCRuntime": true,
       "webviewInstallMode": {
         "type": "offlineInstaller"
       },
