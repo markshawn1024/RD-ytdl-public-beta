@@ -10,7 +10,12 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-pub async fn probe_url(bins: &BinaryPaths, config: &AppConfig, url: &str) -> AppResult<VideoInfo> {
+pub async fn probe_url(
+    bins: &BinaryPaths,
+    config: &AppConfig,
+    url: &str,
+    cache_dir: &Path,
+) -> AppResult<VideoInfo> {
     validate_url(url)?;
 
     let mut cmd = Command::new(&bins.yt_dlp);
@@ -21,6 +26,7 @@ pub async fn probe_url(bins: &BinaryPaths, config: &AppConfig, url: &str) -> App
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     binaries::configure_hidden_process(&mut cmd);
+    binaries::append_runtime_args(&mut cmd, bins, cache_dir);
 
     if let Some(proxy) = config.proxy.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--proxy").arg(proxy);
@@ -33,7 +39,11 @@ pub async fn probe_url(bins: &BinaryPaths, config: &AppConfig, url: &str) -> App
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::ProbeFailed(err.trim().to_string()));
+        let msg = err.trim();
+        let saw_runtime = msg.lines().any(binaries::is_js_runtime_missing);
+        return Err(AppError::ProbeFailed(binaries::format_probe_failure(
+            msg, saw_runtime,
+        )));
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
@@ -156,6 +166,7 @@ pub async fn run_download<F>(
     url: &str,
     format_id: &str,
     output_dir: &Path,
+    cache_dir: &Path,
     cancelled: Arc<AtomicBool>,
     mut on_line: F,
 ) -> AppResult<DownloadRunResult>
@@ -203,6 +214,7 @@ where
         .stderr(Stdio::piped())
         .kill_on_drop(false);
     binaries::configure_hidden_process(&mut cmd);
+    binaries::append_runtime_args(&mut cmd, bins, cache_dir);
 
     if let Some(proxy) = config.proxy.as_deref().filter(|s| !s.is_empty()) {
         cmd.arg("--proxy").arg(proxy);

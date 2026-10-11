@@ -4,17 +4,20 @@ use tauri::{AppHandle, Manager};
 
 const YT_DLP_NAME: &str = "yt-dlp";
 const FFMPEG_NAME: &str = "ffmpeg";
+const DENO_NAME: &str = "deno";
 
 #[derive(Debug, Clone)]
 pub struct BinaryPaths {
     pub yt_dlp: PathBuf,
     pub ffmpeg: PathBuf,
+    pub deno: PathBuf,
 }
 
 pub fn resolve(app: &AppHandle) -> AppResult<BinaryPaths> {
     Ok(BinaryPaths {
         yt_dlp: resolve_sidecar(app, YT_DLP_NAME)?,
         ffmpeg: resolve_sidecar(app, FFMPEG_NAME)?,
+        deno: resolve_sidecar(app, DENO_NAME)?,
     })
 }
 
@@ -30,7 +33,7 @@ fn resolve_sidecar(app: &AppHandle, name: &str) -> AppResult<PathBuf> {
     }
 
     Err(AppError::BinaryMissing(format!(
-        "未找到 {name}，请先运行 npm run fetch-binaries"
+        "未找到内置组件 {name}，安装可能不完整，请重新安装应用"
     )))
 }
 
@@ -47,8 +50,6 @@ fn candidate_paths(app: &AppHandle, exe_name: &str) -> Vec<PathBuf> {
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            paths.push(dir.join(exe_name));
-            // macOS .app: Contents/MacOS
             paths.push(dir.join(exe_name));
         }
     }

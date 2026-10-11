@@ -66,6 +66,7 @@ export interface AppConfig {
 export interface BinaryVersions {
   ytDlp?: string | null;
   ffmpeg?: string | null;
+  deno?: string | null;
 }
 
 export interface ProgressEvent {

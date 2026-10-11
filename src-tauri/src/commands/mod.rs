@@ -95,12 +95,14 @@ pub async fn queue_cancel_current(app: AppHandle) -> Result<(), crate::error::Ap
 
 #[tauri::command]
 pub async fn probe_url(
+    app: AppHandle,
     state: State<'_, AppState>,
     url: String,
 ) -> Result<VideoInfo, crate::error::AppError> {
     let bins = state.task_manager.ensure_bins()?;
     let config = state.config.read().clone();
-    crate::download::runner::probe_url(&bins, &config, &url).await
+    let cache_dir = crate::binaries::cache_dir(&app)?;
+    crate::download::runner::probe_url(&bins, &config, &url, &cache_dir).await
 }
 
 #[tauri::command]
@@ -196,6 +198,7 @@ async fn versions_from_bins(bins: &BinaryPaths) -> BinaryVersions {
     BinaryVersions {
         yt_dlp: crate::binaries::read_version(&bins.yt_dlp).await,
         ffmpeg: crate::binaries::read_version(&bins.ffmpeg).await,
+        deno: crate::binaries::read_version(&bins.deno).await,
     }
 }
 

@@ -19,7 +19,7 @@ jobs:
             args: --target x86_64-apple-darwin
             triple: x86_64-apple-darwin
           - platform: windows-latest
-            args: --target x86_64-pc-windows-msvc
+            args: --target x86_64-pc-windows-msvc --bundles nsis
             triple: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.platform }}
@@ -53,3 +53,11 @@ jobs:
           TAURI_ENV_TARGET_TRIPLE: ${{ matrix.triple }}
         with:
           args: ${{ matrix.args }}
+
+      - name: Upload Windows installer
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RD-Media-Toolkit-Windows-x64
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

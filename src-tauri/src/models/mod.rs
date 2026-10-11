@@ -127,4 +127,5 @@ pub struct LogEvent {
 pub struct BinaryVersions {
     pub yt_dlp: Option<String>,
     pub ffmpeg: Option<String>,
+    pub deno: Option<String>,
 }
